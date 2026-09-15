@@ -1,0 +1,139 @@
+name: "mcp-trust-check"
+description: "Run the full MCP trust & safety trilogy (mcp-doctor, mcp-fuzz, mcp-reality-check) against an MCP server in one step and post one combined score."
+author: "Vishal Habib"
+branding:
+  icon: "shield"
+  color: "purple"
+
+inputs:
+  path:
+    description: "Path to the repo/server to statically audit with mcp-doctor, relative to the checkout."
+    required: false
+    default: "."
+  run:
+    description: >
+      Command that launches the MCP server over stdio, e.g. "python server.py" or
+      "npx -y some-mcp-server". Required for the mcp-fuzz and mcp-reality-check runtime
+      checks. If left empty, only the mcp-doctor static check runs and the runtime checks
+      are skipped (reported as such, not silently dropped).
+    required: false
+    default: ""
+  env:
+    description: "Space-separated KEY=VALUE pairs to pass through to the launched server, e.g. \"BRAVE_API_KEY=xxx OTHER=yyy\"."
+    required: false
+    default: ""
+  include-destructive:
+    description: "Also let mcp-fuzz test tools without readOnlyHint:true. Only enable against a server you're confident is safe to call blindly (a sandbox/test backend) — see mcp-fuzz's README Safety section."
+    required: false
+    default: "false"
+  fail-under:
+    description: "Fail the workflow if the combined score percent is below this threshold. 0 disables gating."
+    required: false
+    default: "0"
+  comment:
+    description: "Post the combined report as a comment on the triggering pull request."
+    required: false
+    default: "true"
+
+outputs:
+  doctor-score:
+    description: "mcp-doctor score percent (0-100)."
+    value: ${{ steps.combine.outputs.doctor-score }}
+  doctor-grade:
+    description: "mcp-doctor letter grade (A-F)."
+    value: ${{ steps.combine.outputs.doctor-grade }}
+  fuzz-score:
+    description: "mcp-fuzz crash-resilience score percent (0-100), if `run` was set."
+    value: ${{ steps.combine.outputs.fuzz-score }}
+  fuzz-grade:
+    description: "mcp-fuzz letter grade (A-F), if `run` was set."
+    value: ${{ steps.combine.outputs.fuzz-grade }}
+  reality-score:
+    description: "mcp-reality-check sanity score percent (0-100), if `run` was set."
+    value: ${{ steps.combine.outputs.reality-score }}
+  reality-grade:
+    description: "mcp-reality-check letter grade (A-F), if `run` was set."
+    value: ${{ steps.combine.outputs.reality-grade }}
+  combined-score:
+    description: "Average of whichever scores were run, percent (0-100)."
+    value: ${{ steps.combine.outputs.combined-score }}
+  combined-grade:
+    description: "Combined letter grade (A-F)."
+    value: ${{ steps.combine.outputs.combined-grade }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install the trilogy
+      shell: bash
+      run: pip install mcp-server-lint mcp-runtime-check mcp-reality-check
+
+    - name: Run mcp-doctor (static)
+      id: doctor
+      shell: bash
+      run: |
+        set +e
+        mcp-doctor "${{ inputs.path }}" --no-color > doctor-report.txt
+        mcp-doctor "${{ inputs.path }}" --json > doctor-report.json
+        set -e
+
+    - name: Run mcp-fuzz and mcp-reality-check (runtime)
+      id: runtime
+      if: ${{ inputs.run != '' }}
+      shell: bash
+      run: |
+        read -ra RUN_CMD <<< "${{ inputs.run }}"
+        ENV_ARGS=()
+        for kv in ${{ inputs.env }}; do
+          ENV_ARGS+=(--env "$kv")
+        done
+        DESTRUCTIVE_FLAG=()
+        if [ "${{ inputs.include-destructive }}" = "true" ]; then
+          DESTRUCTIVE_FLAG=(--include-destructive)
+        fi
+
+        set +e
+        mcp-fuzz "${DESTRUCTIVE_FLAG[@]}" "${ENV_ARGS[@]}" --json -- "${RUN_CMD[@]}" > fuzz-report.json
+        mcp-fuzz "${DESTRUCTIVE_FLAG[@]}" "${ENV_ARGS[@]}" -- "${RUN_CMD[@]}" > fuzz-report.txt
+        mcp-reality-check "${ENV_ARGS[@]}" --json -- "${RUN_CMD[@]}" > reality-report.json
+        mcp-reality-check "${ENV_ARGS[@]}" -- "${RUN_CMD[@]}" > reality-report.txt
+        set -e
+
+    - name: Combine reports
+      id: combine
+      shell: bash
+      run: |
+        python3 "${{ github.action_path }}/combine.py"
+
+    - name: Write job summary
+      shell: bash
+      run: cat combined-report.md >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Comment on pull request
+      if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh pr comment "${{ github.event.pull_request.number }}" \
+          --repo "${{ github.repository }}" \
+          --body-file combined-report.md \
+          --edit-last || \
+        gh pr comment "${{ github.event.pull_request.number }}" \
+          --repo "${{ github.repository }}" \
+          --body-file combined-report.md
+
+    - name: Enforce score gate
+      shell: bash
+      run: |
+        fail_under="${{ inputs.fail-under }}"
+        combined="${{ steps.combine.outputs.combined-score }}"
+        if [ "$fail_under" != "0" ] && [ "$(python3 -c "print(1 if $combined < $fail_under else 0)")" = "1" ]; then
+          echo "::error::mcp-trust-check combined score $combined% is below the required $fail_under%"
+          exit 1
+        fi

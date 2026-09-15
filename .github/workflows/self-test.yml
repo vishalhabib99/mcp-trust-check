@@ -1,0 +1,60 @@
+name: self-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  run-against-reference-server:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out this action
+        uses: actions/checkout@v4
+        with:
+          path: action
+
+      - name: Check out the official MCP reference servers (for mcp-doctor's static target)
+        uses: actions/checkout@v4
+        with:
+          repository: modelcontextprotocol/servers
+          path: servers
+
+      - name: Set up Node (for npx server-memory)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run mcp-trust-check against the memory reference server
+        id: check
+        uses: ./action
+        with:
+          path: servers/src/memory
+          run: "npx -y @modelcontextprotocol/server-memory"
+          comment: "false"
+
+      - name: Verify the action actually produced real scores, not empty output
+        shell: bash
+        run: |
+          echo "doctor-score=${{ steps.check.outputs.doctor-score }}"
+          echo "doctor-grade=${{ steps.check.outputs.doctor-grade }}"
+          echo "fuzz-score=${{ steps.check.outputs.fuzz-score }}"
+          echo "fuzz-grade=${{ steps.check.outputs.fuzz-grade }}"
+          echo "reality-score=${{ steps.check.outputs.reality-score }}"
+          echo "reality-grade=${{ steps.check.outputs.reality-grade }}"
+          echo "combined-score=${{ steps.check.outputs.combined-score }}"
+          echo "combined-grade=${{ steps.check.outputs.combined-grade }}"
+
+          for name in "doctor-score" "doctor-grade" "fuzz-score" "fuzz-grade" "reality-score" "reality-grade" "combined-score" "combined-grade"; do
+            :
+          done
+
+          if [ -z "${{ steps.check.outputs.doctor-score }}" ] || [ -z "${{ steps.check.outputs.combined-score }}" ]; then
+            echo "::error::mcp-trust-check produced empty outputs against a known-good reference server"
+            exit 1
+          fi
+          if [ -z "${{ steps.check.outputs.fuzz-score }}" ] || [ -z "${{ steps.check.outputs.reality-score }}" ]; then
+            echo "::error::runtime checks (fuzz/reality-check) did not run even though 'run' was set"
+            exit 1
+          fi
