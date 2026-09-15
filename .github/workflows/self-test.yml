@@ -46,10 +46,6 @@ jobs:
           echo "combined-score=${{ steps.check.outputs.combined-score }}"
           echo "combined-grade=${{ steps.check.outputs.combined-grade }}"
 
-          for name in "doctor-score" "doctor-grade" "fuzz-score" "fuzz-grade" "reality-score" "reality-grade" "combined-score" "combined-grade"; do
-            :
-          done
-
           if [ -z "${{ steps.check.outputs.doctor-score }}" ] || [ -z "${{ steps.check.outputs.combined-score }}" ]; then
             echo "::error::mcp-trust-check produced empty outputs against a known-good reference server"
             exit 1
