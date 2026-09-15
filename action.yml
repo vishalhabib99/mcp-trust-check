@@ -1,5 +1,5 @@
 name: "mcp-trust-check"
-description: "Run the full MCP trust & safety trilogy (mcp-doctor, mcp-fuzz, mcp-reality-check) against an MCP server in one step and post one combined score."
+description: "Runs mcp-doctor, mcp-fuzz, and mcp-reality-check against an MCP server and posts one combined trust score."
 author: "Vishal Habib"
 branding:
   icon: "shield"
