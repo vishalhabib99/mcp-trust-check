@@ -16,7 +16,7 @@ Static-only — zero extra config, works on any checked-out repo:
 
 ```yaml
 - uses: actions/checkout@v4
-- uses: vishalhabib99/mcp-trust-check@main
+- uses: vishalhabib99/mcp-trust-check@v1
   with:
     path: .
 ```
@@ -25,7 +25,7 @@ Full trilogy — also add `run` with the command that actually starts your serve
 
 ```yaml
 - uses: actions/checkout@v4
-- uses: vishalhabib99/mcp-trust-check@main
+- uses: vishalhabib99/mcp-trust-check@v1
   with:
     path: .
     run: "python server.py"
