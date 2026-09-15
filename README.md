@@ -10,6 +10,12 @@ Each of the three tools already works standalone and does something the other tw
 
 None of them use an LLM judge anywhere — every check here is deterministic and reproducible, same as the tools it wraps.
 
+## Demo
+
+35 seconds, live run against the official MCP reference server — real output, no cherry-picking: 86%/B code quality, 100%/A crash resilience, 100%/A output fidelity, 95%/A combined.
+
+<video src="docs/demo.mp4" controls width="100%"></video>
+
 ## Use
 
 Static-only — zero extra config, works on any checked-out repo:
