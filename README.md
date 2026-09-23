@@ -39,7 +39,20 @@ Full trilogy — also add `run` with the command that actually starts your serve
     fail-under: 80
 ```
 
-If `run` is left empty, only the mcp-doctor static check runs — the runtime checks are skipped and the report says so explicitly, not silently dropped. This is a real tradeoff, not a default to route around: mcp-doctor can statically analyze any checked-out repo path with no configuration, but mcp-fuzz and mcp-reality-check have to actually launch your server, and there's no way to derive a correct launch command from a repo checkout in general — you have to supply it.
+Remote server — if your server ships over Streamable HTTP (a hosted/SaaS MCP server, or one your workflow starts in an earlier step), pass `url` instead of `run`:
+
+```yaml
+- uses: actions/checkout@v4
+- uses: vishalhabib99/mcp-trust-check@v1
+  with:
+    path: .
+    url: "https://example.com/mcp"
+    headers: |
+      Authorization=Bearer ${{ secrets.MCP_TOKEN }}
+    fail-under: 80
+```
+
+Set `run` or `url`, not both — the Action fails fast if it gets both. If both are left empty, only the mcp-doctor static check runs — the runtime checks are skipped and the report says so explicitly, not silently dropped. This is a real tradeoff, not a default to route around: mcp-doctor can statically analyze any checked-out repo path with no configuration, but mcp-fuzz and mcp-reality-check have to actually launch (or connect to) your server, and there's no way to derive a correct launch command from a repo checkout in general — you have to supply it.
 
 ## Inputs
 
@@ -47,6 +60,8 @@ If `run` is left empty, only the mcp-doctor static check runs — the runtime ch
 |---|---|---|
 | `path` | `.` | Path to statically audit with mcp-doctor. |
 | `run` | `""` | Command that launches the server over stdio, for the mcp-fuzz/mcp-reality-check runtime checks. Empty = runtime checks skipped. |
+| `url` | `""` | URL of an already-running server to test over Streamable HTTP instead of launching one with `run`. Set one or the other. |
+| `headers` | `""` | HTTP headers for `url`, one `KEY=VALUE` per line (values may contain spaces — e.g. `Authorization=Bearer ...`). Pass tokens from secrets. |
 | `env` | `""` | Space-separated `KEY=VALUE` pairs passed through to the launched server (many real servers need an API key to start at all). |
 | `include-destructive` | `false` | Also let mcp-fuzz test tools without `readOnlyHint: true`. Only turn this on against a server you're confident is safe to call blindly — see mcp-fuzz's README Safety section before using it. |
 | `fail-under` | `0` | Fail the workflow if the combined score is below this percent. `0` disables gating. |
@@ -54,11 +69,11 @@ If `run` is left empty, only the mcp-doctor static check runs — the runtime ch
 
 ## Outputs
 
-`doctor-score` / `doctor-grade`, `fuzz-score` / `fuzz-grade`, `reality-score` / `reality-grade` (empty if `run` wasn't set), and `combined-score` / `combined-grade`.
+`doctor-score` / `doctor-grade`, `fuzz-score` / `fuzz-grade`, `reality-score` / `reality-grade` (empty if neither `run` nor `url` was set), and `combined-score` / `combined-grade`.
 
 ## What the combined score means — and doesn't
 
-The combined score is a plain, unweighted average of whichever of the three scores actually ran (one or three — never two, since fuzz and reality-check both need `run` or neither runs). No tool is weighted more heavily than another; that would require a judgment call about which failure mode matters more that this project isn't going to make for you. Treat it as a single skim-friendly number for a PR check, not a substitute for reading the three sections underneath it — each retains its own real caveats (mcp-fuzz's crash-resilience score, for instance, deliberately doesn't grade whether a *successful* call's output was actually correct; that's what the reality-check section is for).
+The combined score is a plain, unweighted average of whichever of the three scores actually ran (one or three — never two, since fuzz and reality-check both run when `run` or `url` is set, or neither does). No tool is weighted more heavily than another; that would require a judgment call about which failure mode matters more that this project isn't going to make for you. Treat it as a single skim-friendly number for a PR check, not a substitute for reading the three sections underneath it — each retains its own real caveats (mcp-fuzz's crash-resilience score, for instance, deliberately doesn't grade whether a *successful* call's output was actually correct; that's what the reality-check section is for).
 
 This repo contains no new detection logic of its own — it's orchestration over the three published tools, each independently dogfooded against 40+ real-world MCP servers (see each tool's own README for that history). If a check here is wrong, the bug is almost certainly in the underlying tool, not in the combining step.
 

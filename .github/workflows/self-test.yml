@@ -54,3 +54,55 @@ jobs:
             echo "::error::runtime checks (fuzz/reality-check) did not run even though 'run' was set"
             exit 1
           fi
+
+  run-against-http-reference-server:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out this action
+        uses: actions/checkout@v4
+        with:
+          path: action
+
+      - name: Check out the official MCP reference servers (for mcp-doctor's static target)
+        uses: actions/checkout@v4
+        with:
+          repository: modelcontextprotocol/servers
+          path: servers
+
+      - name: Set up Node (for npx server-everything)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Start the everything reference server over Streamable HTTP
+        shell: bash
+        run: |
+          PORT=3001 npx -y @modelcontextprotocol/server-everything streamableHttp > server.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -s -o /dev/null http://localhost:3001/mcp && exit 0
+            sleep 1
+          done
+          cat server.log
+          echo "::error::server-everything did not start listening on :3001 within 60s"
+          exit 1
+
+      - name: Run mcp-trust-check against it by URL (with a header, to exercise --header passthrough)
+        id: check
+        uses: ./action
+        with:
+          path: servers/src/everything
+          url: "http://localhost:3001/mcp"
+          headers: |
+            X-Self-Test=mcp trust check
+          comment: "false"
+
+      - name: Verify the runtime checks actually ran over HTTP
+        shell: bash
+        run: |
+          echo "fuzz-score=${{ steps.check.outputs.fuzz-score }}"
+          echo "reality-score=${{ steps.check.outputs.reality-score }}"
+          echo "combined-score=${{ steps.check.outputs.combined-score }}"
+          if [ -z "${{ steps.check.outputs.fuzz-score }}" ] || [ -z "${{ steps.check.outputs.reality-score }}" ]; then
+            echo "::error::runtime checks (fuzz/reality-check) did not run even though 'url' was set"
+            exit 1
+          fi
