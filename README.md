@@ -77,6 +77,10 @@ The combined score is a plain, unweighted average of whichever of the three scor
 
 This repo contains no new detection logic of its own — it's orchestration over the three published tools, each independently dogfooded against 40+ real-world MCP servers (see each tool's own README for that history). If a check here is wrong, the bug is almost certainly in the underlying tool, not in the combining step.
 
+## Hosted servers: a metadata-only survey
+
+The runtime checks are meant for servers you run yourself. For 10 public hosted MCP servers (Hugging Face, Microsoft Learn, AWS Knowledge, Cloudflare Docs, Context7, Exa, Svelte, Kiwi.com, DeepWiki, GitMCP), [`docs/hosted-survey-2026-09`](docs/hosted-survey-2026-09/) records only what every client reads on connect, with no tool calls. It covers annotations, the context cost per tool, and what gets sent vs. what the model sees. Headline: 2 of 10 servers mark no tool as read-only, so under the spec's defaults, 8 tools that only read look destructive.
+
 ## Live session wrapper
 
 The Action above runs once, in CI. By now, each tool in the trilogy also has its own live counterpart, usable directly in an agent's own code: `mcp-doctor`'s [registration gate](https://github.com/vishalhabib99/mcp-doctor#runtime-gate--the-same-two-checks-applied-to-live-toolslist-metadata), `mcp-fuzz`'s [latency gate](https://github.com/vishalhabib99/mcp-fuzz#runtime-gate--the-same-two-checks-live-during-a-real-agent-session), `mcp-reality-check`'s [correctness gate](https://github.com/vishalhabib99/mcp-reality-check#runtime-gate--use-it-live-not-just-as-a-batch-audit). `GuardedSession` is the same idea as this Action, applied there: one wrapper around a real `ClientSession` that runs all three at their natural point, instead of three separate imports wired by hand.
