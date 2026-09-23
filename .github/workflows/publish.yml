@@ -32,3 +32,6 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Action-only releases (v1.x tags) reuse the unchanged package version; don't fail on them.
+          skip-existing: true

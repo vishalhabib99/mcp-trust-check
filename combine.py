@@ -2,7 +2,7 @@
 
 Run by action.yml as a step, not meant to be used standalone. Reads whichever
 *-report.json / *-report.txt files are present in the working directory (doctor
-always runs; fuzz/reality only if `run` was set) and writes combined-report.md
+always runs; fuzz/reality only if `run` or `url` was set) and writes combined-report.md
 plus the combine step's GITHUB_OUTPUT entries.
 """
 
@@ -78,9 +78,9 @@ def main() -> None:
     skipped_note = ""
     if "fuzz" not in scores or "reality" not in scores:
         skipped_note = (
-            "\n> mcp-fuzz and mcp-reality-check were skipped — no `run` input was given, so only the "
-            "static mcp-doctor check ran. Pass `run: \"<command that launches the server>\"` to also "
-            "run the runtime checks.\n"
+            "\n> mcp-fuzz and mcp-reality-check were skipped — no `run` or `url` input was given, so only "
+            "the static mcp-doctor check ran. Pass `run: \"<command that launches the server>\"` (stdio) "
+            "or `url: \"https://.../mcp\"` (Streamable HTTP) to also run the runtime checks.\n"
         )
 
     summary = (
