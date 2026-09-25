@@ -65,17 +65,34 @@ Set `run` or `url`, not both — the Action fails fast if it gets both. If both 
 | `env` | `""` | Space-separated `KEY=VALUE` pairs passed through to the launched server (many real servers need an API key to start at all). |
 | `include-destructive` | `false` | Also let mcp-fuzz test tools without `readOnlyHint: true`. Only turn this on against a server you're confident is safe to call blindly — see mcp-fuzz's README Safety section before using it. |
 | `fail-under` | `0` | Fail the workflow if the combined score is below this percent. `0` disables gating. |
+| `fail-on` | `never` | Fail the workflow on the release decision: `block` fails on BLOCK, `fix` fails on FIX-FIRST or BLOCK, `never` disables it. |
 | `comment` | `true` | Post the combined report as a PR comment. |
 
 ## Outputs
 
-`doctor-score` / `doctor-grade`, `fuzz-score` / `fuzz-grade`, `reality-score` / `reality-grade` (empty if neither `run` nor `url` was set), and `combined-score` / `combined-grade`.
+`doctor-score` / `doctor-grade`, `fuzz-score` / `fuzz-grade`, `reality-score` / `reality-grade` (empty if neither `run` nor `url` was set), `combined-score` / `combined-grade`, and `decision` (`SHIP`, `FIX-FIRST`, or `BLOCK`) with `blocker-count` / `fix-count`.
+
+## Release decision: SHIP, FIX-FIRST, or BLOCK
+
+A score answers "how good is it on average?" The question a release actually asks is "can this go out?", and an average is the wrong tool for that. A server that crashes on one bad input, or tells an agent a failed call worked, can still average an A.
+
+So next to the score, the report gives a **decision**, built from a short list of explicit rules over the raw findings. The worst finding wins, and every rule that fires is listed as a reason:
+
+| Decision | Fires when |
+|---|---|
+| ⛔ **BLOCK** | mcp-doctor security **error** · the server crashed (process died) on any fuzz input · the server never connected, or the run ended early · any tool returned a **disguised refusal** (an agent reads it as success and acts on it) |
+| 🟡 **FIX-FIRST** | mcp-doctor security warning or spec/documentation error · fuzz timeouts · tools that misbehave under concurrent calls · resources still readable after delete, or orphaned after a parent delete · empty content, output that breaks its own schema, or output that ignores its input |
+| ✅ **SHIP** | none of the above |
+
+Quality **warnings** from mcp-doctor (a vague description, say) lower the score but never change the decision. If the runtime checks were skipped, the report says the decision covers static analysis only. Use `fail-on: block` to gate PRs on it. Same design as everything else here: no LLM, no weights, deterministic, and the rules live in one short file ([`decision.py`](decision.py)) you can read in two minutes.
+
+Checked against real runs, not just unit tests: the official memory reference server (runtime checks) gets **SHIP**, and the test fixture server, which has a tool that quietly refuses, gets **BLOCK** with that tool named.
 
 ## What the combined score means — and doesn't
 
 The combined score is a plain, unweighted average of whichever of the three scores actually ran (one or three — never two, since fuzz and reality-check both run when `run` or `url` is set, or neither does). No tool is weighted more heavily than another; that would require a judgment call about which failure mode matters more that this project isn't going to make for you. Treat it as a single skim-friendly number for a PR check, not a substitute for reading the three sections underneath it — each retains its own real caveats (mcp-fuzz's crash-resilience score, for instance, deliberately doesn't grade whether a *successful* call's output was actually correct; that's what the reality-check section is for).
 
-This repo contains no new detection logic of its own — it's orchestration over the three published tools, each independently dogfooded against 40+ real-world MCP servers (see each tool's own README for that history). If a check here is wrong, the bug is almost certainly in the underlying tool, not in the combining step.
+Apart from the decision rules above, which only read the three tools' existing findings, this repo contains no new detection logic of its own — it's orchestration over the three published tools, each independently dogfooded against 40+ real-world MCP servers (see each tool's own README for that history). If a check here is wrong, the bug is almost certainly in the underlying tool, not in the combining step.
 
 ## Hosted servers: a metadata-only survey
 

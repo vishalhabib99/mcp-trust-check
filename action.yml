@@ -43,6 +43,12 @@ inputs:
     description: "Fail the workflow if the combined score percent is below this threshold. 0 disables gating."
     required: false
     default: "0"
+  fail-on:
+    description: >
+      Fail the workflow on the release decision instead of (or as well as) the score:
+      "block" fails only on BLOCK, "fix" fails on FIX-FIRST or BLOCK, "never" disables it.
+    required: false
+    default: "never"
   comment:
     description: "Post the combined report as a comment on the triggering pull request."
     required: false
@@ -73,6 +79,15 @@ outputs:
   combined-grade:
     description: "Combined letter grade (A-F)."
     value: ${{ steps.combine.outputs.combined-grade }}
+  decision:
+    description: "Release decision: SHIP, FIX-FIRST, or BLOCK. The worst finding wins; see the report for the reasons."
+    value: ${{ steps.combine.outputs.decision }}
+  blocker-count:
+    description: "Number of rules that fired at BLOCK level."
+    value: ${{ steps.combine.outputs.blocker-count }}
+  fix-count:
+    description: "Number of rules that fired at FIX-FIRST level."
+    value: ${{ steps.combine.outputs.fix-count }}
 
 runs:
   using: "composite"
@@ -168,3 +183,16 @@ runs:
           echo "::error::mcp-trust-check combined score $combined% is below the required $fail_under%"
           exit 1
         fi
+
+    - name: Enforce decision gate
+      shell: bash
+      run: |
+        fail_on="${{ inputs.fail-on }}"
+        decision="${{ steps.combine.outputs.decision }}"
+        case "$fail_on" in
+          never) ;;
+          block) [ "$decision" = "BLOCK" ] && { echo "::error::mcp-trust-check decision is BLOCK"; exit 1; } ;;
+          fix) [ "$decision" != "SHIP" ] && { echo "::error::mcp-trust-check decision is $decision"; exit 1; } ;;
+          *) echo "::error::fail-on must be never, block, or fix (got '$fail_on')"; exit 1 ;;
+        esac
+        exit 0

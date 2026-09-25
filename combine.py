@@ -1,4 +1,4 @@
-"""Combines the doctor/fuzz/reality-check JSON+text reports into one score and one markdown summary.
+"""Combines the doctor/fuzz/reality-check JSON+text reports into one score, one release decision, and one markdown summary.
 
 Run by action.yml as a step, not meant to be used standalone. Reads whichever
 *-report.json / *-report.txt files are present in the working directory (doctor
@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+
+from decision import decide, render_markdown
 
 
 def grade_for_percent(pct: float) -> str:
@@ -83,9 +85,11 @@ def main() -> None:
             "or `url: \"https://.../mcp\"` (Streamable HTTP) to also run the runtime checks.\n"
         )
 
+    decision = decide(doctor, fuzz, reality)
+
     summary = (
-        f"## mcp-trust-check — combined score: {combined:.0f}% ({combined_grade})\n"
-        f"{skipped_note}\n" + "\n\n".join(sections) + "\n"
+        f"## mcp-trust-check — {decision.verdict} · combined score: {combined:.0f}% ({combined_grade})\n"
+        f"{skipped_note}\n" + render_markdown(decision) + "\n" + "\n\n".join(sections) + "\n"
     )
     Path("combined-report.md").write_text(summary)
 
@@ -100,6 +104,9 @@ def main() -> None:
             f.write(f"reality-grade={grades.get('reality', '')}\n")
             f.write(f"combined-score={combined:.2f}\n")
             f.write(f"combined-grade={combined_grade}\n")
+            f.write(f"decision={decision.verdict}\n")
+            f.write(f"blocker-count={len(decision.blockers)}\n")
+            f.write(f"fix-count={len(decision.fixes)}\n")
 
 
 if __name__ == "__main__":
