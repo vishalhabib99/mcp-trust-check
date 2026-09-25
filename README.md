@@ -175,9 +175,51 @@ Confidence is how much of this call could actually be checked:
 
 Dogfooded on the official `@modelcontextprotocol/server-memory` server: a `read_graph` before `list_tools` came back ACT/LOW. After registration, `create_entities` came back ACT/MEDIUM (first call). `read_graph` stayed MEDIUM until its third earlier call, then moved to HIGH.
 
+### Policy, audit log, and PII: guardrails for a live agent
+
+Three things the trilogy used to leave out, rebuilt so nothing is guessed:
+
+**Policy gate, checked before the call.** You write which tools the agent may call, with which arguments, and which calls need a person first. A denied or unapproved call is never sent (`result.called` is `False`).
+
+```python
+from mcp_trust_check import AuditLog, GuardedSession, Policy
+
+policy = Policy.from_dict({
+    "allow_tools": ["read_graph", "search_nodes", "create_entities"],  # optional allowlist
+    "deny_tools": ["delete_entities"],                                 # always wins
+    "require_approval": ["create_entities"],                           # needs approved=True
+    "require_approval_for_destructive": True,                          # any tool not annotated readOnlyHint=true
+    "arguments": {"search_nodes": {"query": {"pattern": "[A-Za-z0-9 ]{1,64}"}}},  # fullmatch; also "enum"
+    "pii": ["card", "ssn", "iban"],                                    # the default; add "email", or [] to turn off
+})
+gs = GuardedSession(session, policy=policy, audit_log="agent-audit.jsonl")
+result = await gs.call_tool("create_entities", {...})                # ESCALATE, not called
+result = await gs.call_tool("create_entities", {...}, approved=True)  # a person said yes
+```
+
+Unknown keys or rule types are an error, never ignored. A misspelled `deny_tool` that silently allowed everything would be the worst way for a policy to fail. A tool that never went through `list_tools` counts as not read-only, so it needs approval instead of slipping through.
+
+**Audit log.** Every call, including the ones the policy stopped, gets one JSON line with the decision, confidence and reasons. Each line carries the SHA-256 of the one before it, so an edited, deleted or reordered line breaks the chain at that point. That's tamper-evident, not tamper-proof: anyone who can rewrite the whole file can rebuild the chain, so anchor the last hash somewhere else if that matters. Argument values aren't logged by default, since they can hold the PII this checks for. You get the argument names and a hash instead (`AuditLog(path, log_arguments=True)` logs the values).
+
+```
+mcp-trust-check-audit verify agent-audit.jsonl    # OK: 17 records, chain intact, ...
+mcp-trust-check-audit summary agent-audit.jsonl   # decisions per tool, top reasons
+```
+
+**PII in responses → ESCALATE.** Every response, including `isError` ones, is scanned. Every detector needs a structural validity check, not just a pattern match:
+
+- **card**: a real network prefix, the right length, and a valid Luhn checksum
+- **ssn**: dashed form, within the issued ranges
+- **iban**: the right length for the country, and a valid mod-97 checksum
+- **email**: off by default, since docs and git metadata are full of legitimate addresses
+
+Findings are masked to the last 4 characters. Accuracy was measured on 20,513 real text files (300 MB of READMEs, lockfiles, JSON and source). The first version produced 195 card hits, from digit runs inside sha256 hashes and SVG path coordinates. After tightening, there were 13 hits, and every one is a genuinely card-, SSN- or IBAN-formatted value: published test cards, test IBANs in a banking server's fixtures, and an example SSN. That's 0 false positives on that corpus.
+
+Dogfooded on the official `server-filesystem` (reading 16 real files, and a `write_file` attempt held for approval without being called) and `server-memory` (a stored test card and SSN, escalated on `create_entities` and again on `read_graph`, masked in the audit log). That run also exposed a false positive upstream: reading a README that merely mentions refusal phrases was flagged as a disguised refusal. It's fixed at the source in [mcp-reality-check 0.4.1](https://github.com/vishalhabib99/mcp-reality-check/releases/tag/v0.4.1): over 12,445 real files, flagged files went from 38 to 0, and all 12 refusal samples are still caught.
+
 **One real call per `call_tool`, not three** — the reason this exists as its own composed wrapper rather than "just call all three gates yourself": `mcp_fuzz.gate.LatencyGate.timed_call` and `mcp_reality_check.gate.guarded_call` each make their own real call to the tool. Calling both back to back would mean two real invocations per logical call — wasteful for an idempotent tool, actively wrong for a non-idempotent or destructive one. `GuardedSession` calls the tool exactly once and fans the single real response out to each sibling package's own pure, already-tested per-response functions instead — verified directly: a real test wraps the underlying session's `call_tool` with a call counter and asserts it fires exactly once per `GuardedSession.call_tool`.
 
-Same scope discipline as its three parts: correctness and latency, not security — see each sibling's own README for why that's a deliberate boundary, not an oversight. Dogfooded live against the official `@modelcontextprotocol/server-memory` reference server — registration, a real `create_entities` call, and a real `read_graph` call, all clean.
+What it doesn't do: detect prompt injection or scan arguments for secrets in transit. That's the runtime-security-proxy space, which already has mature tools (see mcp-reality-check's README). What it does enforce on the security side is the operator's own policy, described above, and PII in responses. Dogfooded live against the official `@modelcontextprotocol/server-memory` reference server — registration, a real `create_entities` call, and a real `read_graph` call, all clean.
 
 ## License
 

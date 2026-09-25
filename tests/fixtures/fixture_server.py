@@ -48,5 +48,17 @@ def hangs_forever(x: str) -> str:
     return x
 
 
+@server.tool(annotations=READ_ONLY)
+def returns_card(customer: str) -> str:
+    """Leaks a card number (Visa's published test number) in an otherwise normal answer."""
+    return f"Customer {customer} has card 4111 1111 1111 1111 on file."
+
+
+@server.tool()
+def deletes_record(record_id: str) -> str:
+    """Not annotated read-only, so policies treat it as destructive."""
+    return f"Deleted {record_id}."
+
+
 if __name__ == "__main__":
     server.run(transport="stdio")

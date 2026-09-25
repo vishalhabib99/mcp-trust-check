@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-trust-check"
-version = "0.2.0"
+version = "0.3.0"
 description = "Live session wrapper composing mcp-doctor's registration gate, mcp-fuzz's latency gate, and mcp-reality-check's correctness gate into one call site for a real MCP agent session."
 readme = "README.md"
 license = "MIT"
@@ -13,8 +13,11 @@ dependencies = [
     "mcp>=1.0",
     "mcp-server-lint>=0.10.0",
     "mcp-runtime-check>=0.7.0",
-    "mcp-reality-check>=0.3.0",
+    "mcp-reality-check>=0.4.1",
 ]
+
+[project.scripts]
+mcp-trust-check-audit = "mcp_trust_check.audit:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["mcp_trust_check"]

@@ -23,8 +23,10 @@ call internally, reused here instead of duplicated.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from mcp import ClientSession, types
 
@@ -38,6 +40,10 @@ from mcp_reality_check.checks import (
     response_text_from_content,
 )
 from mcp_reality_check.generator import string_argument_values
+
+from mcp_trust_check.audit import AuditLog
+from mcp_trust_check.pii import DEFAULT_DETECTORS, find_pii
+from mcp_trust_check.policy import Policy
 
 DEFAULT_TIMEOUT_SECONDS = 15.0
 
@@ -79,6 +85,10 @@ class GuardedCallResult:
     # latency/size (mcp-fuzz)
     slow_reasons: list[str] = field(default_factory=list)
     bloated_reasons: list[str] = field(default_factory=list)
+    # PII found in the response (masked, e.g. "card ************4242")
+    pii_findings: list[str] = field(default_factory=list)
+    # False when the policy stopped the call before it reached the server
+    called: bool = True
 
     @property
     def flagged(self) -> bool:
@@ -129,6 +139,9 @@ def decide_call(
         reasons.append(f"output breaks its own schema: {result.schema_violation}")
     reasons.extend(f"slow: {r}" for r in result.slow_reasons)
     reasons.extend(f"large response: {r}" for r in result.bloated_reasons)
+    if result.pii_findings:
+        # The data already left the server; a person decides whether the agent may use it.
+        reasons.append(f"PII in response: {', '.join(result.pii_findings)}")
     decision = ESCALATE if reasons else ACT
     if result.is_error:
         reasons.append("the tool returned an honest error (isError), safe for the agent to handle")
@@ -155,8 +168,20 @@ class GuardedSession:
     accumulates across every `call_tool` made through this wrapper, same
     as using `mcp_fuzz.gate.LatencyGate` directly."""
 
-    def __init__(self, session: ClientSession):
+    def __init__(
+        self,
+        session: ClientSession,
+        policy: Policy | None = None,
+        audit_log: AuditLog | str | None = None,
+    ):
+        """`policy` is enforced before every call (see mcp_trust_check.policy); without one, all
+        calls go through and responses are scanned with the default PII detectors. `audit_log`
+        is an AuditLog or a path; every call, including ones the policy stopped, gets a
+        hash-chained record."""
         self._session = session
+        self.policy = policy
+        self._pii_detectors = policy.pii if policy is not None else DEFAULT_DETECTORS
+        self.audit_log = AuditLog(audit_log) if isinstance(audit_log, (str, Path)) else audit_log
         self._latency_gate = LatencyGate()
         self._tools_by_name: dict[str, types.Tool] = {}
         self.registration_results: dict[str, RegistrationResult] = {}
@@ -181,20 +206,33 @@ class GuardedSession:
         tool_name: str,
         arguments: dict,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        approved: bool = False,
     ) -> GuardedCallResult:
         """Calls `tool_name` via the wrapped session exactly once, and
         checks the one real response for both latency/size (mcp-fuzz) and
         correctness (mcp-reality-check) issues. Use in place of a bare
-        `session.call_tool(...)`."""
+        `session.call_tool(...)`. If a policy is set, it's checked first and
+        a denied or unapproved call is never sent (`called` is False).
+        `approved=True` means a person approved this call."""
+        if self.policy is not None:
+            verdict, policy_reasons = self.policy.check(
+                tool_name, arguments, read_only=self._is_read_only(tool_name), approved=approved
+            )
+            if verdict is not None:
+                stopped = GuardedCallResult(tool_name, "not_called", called=False)
+                stopped.decision, stopped.confidence, stopped.reasons = verdict, HIGH, policy_reasons
+                self._audit(stopped, arguments)
+                return stopped
+
         started = time.monotonic()
         try:
             result = await asyncio.wait_for(
                 self._session.call_tool(tool_name, arguments), timeout=timeout
             )
         except asyncio.TimeoutError:
-            return self._decide(GuardedCallResult(tool_name, "timeout", detail=f"no response within {timeout}s"))
+            return self._decide(GuardedCallResult(tool_name, "timeout", detail=f"no response within {timeout}s"), arguments)
         except Exception as exc:
-            return self._decide(GuardedCallResult(tool_name, "crash", detail=f"{type(exc).__name__}: {exc}"))
+            return self._decide(GuardedCallResult(tool_name, "crash", detail=f"{type(exc).__name__}: {exc}"), arguments)
         duration_ms = (time.monotonic() - started) * 1000
 
         is_error = bool(_field(result, "is_error", "isError")) if isinstance(result, types.CallToolResult) else False
@@ -222,9 +260,26 @@ class GuardedSession:
                 structured = _field(result, "structured_content", "structuredContent")
                 guarded.schema_violation = check_output_schema(structured, output_schema)
 
-        return self._decide(guarded, prior_calls)
+        # Scanned even on isError: an error message can leak a record just as well.
+        scanned = response_text
+        structured = _field(result, "structured_content", "structuredContent") if hasattr(result, "content") else None
+        if structured is not None:
+            scanned += "\n" + json.dumps(structured, default=str)
+        # Deduped: servers often send the same answer twice (text content and structuredContent).
+        guarded.pii_findings = list(dict.fromkeys(str(f) for f in find_pii(scanned, self._pii_detectors)))
 
-    def _decide(self, guarded: GuardedCallResult, prior_calls: int | None = None) -> GuardedCallResult:
+        return self._decide(guarded, arguments, prior_calls)
+
+    def _is_read_only(self, tool_name: str) -> bool:
+        # A tool that never went through list_tools counts as not read-only: with
+        # require_approval_for_destructive, an unknown tool needs approval rather than slipping through.
+        tool = self._tools_by_name.get(tool_name)
+        annotations = tool.annotations if tool is not None else None
+        if annotations is None:
+            return False
+        return bool(_field(annotations, "read_only_hint", "readOnlyHint"))
+
+    def _decide(self, guarded: GuardedCallResult, arguments: dict, prior_calls: int | None = None) -> GuardedCallResult:
         name = guarded.tool_name
         registration = self.registration_results.get(name)
         guarded.decision, guarded.confidence, guarded.reasons = decide_call(
@@ -233,4 +288,14 @@ class GuardedSession:
             known_tool=name in self._tools_by_name,
             registration_flagged=bool(registration and registration.flagged),
         )
+        self._audit(guarded, arguments)
         return guarded
+
+    def _audit(self, guarded: GuardedCallResult, arguments: dict) -> None:
+        if self.audit_log is None:
+            return
+        self.audit_log.write(
+            tool=guarded.tool_name, arguments=arguments, called=guarded.called,
+            outcome=guarded.outcome, decision=guarded.decision, confidence=guarded.confidence,
+            reasons=guarded.reasons, duration_ms=guarded.duration_ms,
+        )
