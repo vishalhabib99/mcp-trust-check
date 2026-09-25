@@ -65,12 +65,12 @@ Set `run` or `url`, not both — the Action fails fast if it gets both. If both 
 | `env` | `""` | Space-separated `KEY=VALUE` pairs passed through to the launched server (many real servers need an API key to start at all). |
 | `include-destructive` | `false` | Also let mcp-fuzz test tools without `readOnlyHint: true`. Only turn this on against a server you're confident is safe to call blindly — see mcp-fuzz's README Safety section before using it. |
 | `fail-under` | `0` | Fail the workflow if the combined score is below this percent. `0` disables gating. |
-| `fail-on` | `never` | Fail the workflow on the release decision: `block` fails on BLOCK, `fix` fails on FIX-FIRST or BLOCK, `never` disables it. |
+| `fail-on` | `never` | Fail the workflow on the release decision: `block` fails on BLOCK, `fix` fails on FIX-FIRST or BLOCK, `review` fails unless it's SHIP with HIGH confidence, `never` disables it. |
 | `comment` | `true` | Post the combined report as a PR comment. |
 
 ## Outputs
 
-`doctor-score` / `doctor-grade`, `fuzz-score` / `fuzz-grade`, `reality-score` / `reality-grade` (empty if neither `run` nor `url` was set), `combined-score` / `combined-grade`, and `decision` (`SHIP`, `FIX-FIRST`, or `BLOCK`) with `blocker-count` / `fix-count`.
+`doctor-score` / `doctor-grade`, `fuzz-score` / `fuzz-grade`, `reality-score` / `reality-grade` (empty if neither `run` nor `url` was set), `combined-score` / `combined-grade`, and `decision` (`SHIP`, `FIX-FIRST`, or `BLOCK`) with `blocker-count` / `fix-count`, `confidence` (`HIGH`, `MEDIUM`, or `LOW`), `needs-human-review` (`true`/`false`) and `coverage-percent`.
 
 ## Release decision: SHIP, FIX-FIRST, or BLOCK
 
@@ -81,12 +81,36 @@ So next to the score, the report gives a **decision**, built from a short list o
 | Decision | Fires when |
 |---|---|
 | ⛔ **BLOCK** | mcp-doctor security **error** · the server crashed (process died) on any fuzz input · the server never connected, or the run ended early · any tool returned a **disguised refusal** (an agent reads it as success and acts on it) |
-| 🟡 **FIX-FIRST** | mcp-doctor security warning or spec/documentation error · fuzz timeouts · tools that misbehave under concurrent calls · resources still readable after delete, or orphaned after a parent delete · empty content, output that breaks its own schema, or output that ignores its input |
+| 🟡 **FIX-FIRST** | mcp-doctor security warning or spec/documentation error · fuzz timeouts · tools that misbehave under concurrent calls · resources still readable after delete, or orphaned after a parent delete · empty content, or output that breaks its own schema |
 | ✅ **SHIP** | none of the above |
 
 Quality **warnings** from mcp-doctor (a vague description, say) lower the score but never change the decision. If the runtime checks were skipped, the report says the decision covers static analysis only. Use `fail-on: block` to gate PRs on it. Same design as everything else here: no LLM, no weights, deterministic, and the rules live in one short file ([`decision.py`](decision.py)) you can read in two minutes.
 
 Checked against real runs, not just unit tests: the official memory reference server (runtime checks) gets **SHIP**, and the test fixture server, which has a tool that quietly refuses, gets **BLOCK** with that tool named.
+
+### Confidence: should you act on the decision?
+
+The decision says *what*. Confidence says *whether to act on it*, the same split TypeSafe's Jev model makes for agent decisions. Jev learns its confidence from training data. Here it's plainer: **how much of the server was actually exercised.** mcp-fuzz only calls tools annotated read-only unless you pass `include-destructive`, so a SHIP can rest on a small slice of the server.
+
+| Confidence | When |
+|---|---|
+| **HIGH** | mcp-fuzz called at least 80% of the tools, and mcp-reality-check got a real response to check. Also every BLOCK: a crash seen once is a crash, and untested tools can only add to it. |
+| **MEDIUM** | 50–79% of tools called, or no successful response for mcp-reality-check to check |
+| **LOW** | under 50% called, or the runtime checks didn't run |
+
+`needs-human-review` is `true` for everything except SHIP with HIGH confidence. Pair it with `fail-on: review` to auto-pass the clear cases and send the rest to a person.
+
+It's a level with its reasons listed, never a number like 0.82. A calibrated probability would need past releases with known outcomes to fit against, and there aren't any, so a decimal here would claim a precision the rules don't have.
+
+On five official or widely used servers, run locally with the defaults, all five came out SHIP. Confidence is what told them apart:
+
+| Server | Tools called | Decision |
+|---|---|---|
+| `server-sequential-thinking` | 1 / 1 | SHIP, **HIGH** |
+| `server-filesystem` | 10 / 14 | SHIP, MEDIUM |
+| `server-everything` | 9 / 13 | SHIP, MEDIUM |
+| `server-memory` | 3 / 9 | SHIP, **LOW** |
+| `chrome-devtools-mcp` (52.6K★) | 8 / 30 | SHIP, **LOW** |
 
 ## What the combined score means — and doesn't
 

@@ -88,7 +88,7 @@ def main() -> None:
     decision = decide(doctor, fuzz, reality)
 
     summary = (
-        f"## mcp-trust-check — {decision.verdict} · combined score: {combined:.0f}% ({combined_grade})\n"
+        f"## mcp-trust-check — {decision.verdict} ({decision.confidence} confidence) · combined score: {combined:.0f}% ({combined_grade})\n"
         f"{skipped_note}\n" + render_markdown(decision) + "\n" + "\n\n".join(sections) + "\n"
     )
     Path("combined-report.md").write_text(summary)
@@ -107,6 +107,10 @@ def main() -> None:
             f.write(f"decision={decision.verdict}\n")
             f.write(f"blocker-count={len(decision.blockers)}\n")
             f.write(f"fix-count={len(decision.fixes)}\n")
+            f.write(f"confidence={decision.confidence}\n")
+            f.write(f"needs-human-review={'true' if decision.needs_human_review else 'false'}\n")
+            cov = decision.coverage_percent
+            f.write(f"coverage-percent={'' if cov is None else cov}\n")
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from decision import BLOCK, FIX_FIRST, SHIP, decide  # noqa: E402
+from decision import BLOCK, FIX_FIRST, HIGH, LOW, MEDIUM, SHIP, decide  # noqa: E402
 
 
 def _doctor(*issues, repo_issues=()):
@@ -29,6 +29,8 @@ def _fuzz(**overrides):
     base = {
         "connect_error": None,
         "terminated_early": None,
+        "tested_count": 10,
+        "skipped_count": 0,
         "crash_count": 0,
         "timeout_count": 0,
         "crash_resilience_percent": 100.0,
@@ -42,7 +44,7 @@ def _fuzz(**overrides):
 
 
 def _reality(*tools, **overrides):
-    base = {"connect_error": None, "sanity_percent": 100.0, "grade": "A", "tools": list(tools)}
+    base = {"connect_error": None, "checkable_count": 1, "sanity_percent": 100.0, "grade": "A", "tools": list(tools)}
     base.update(overrides)
     return base
 
@@ -95,7 +97,7 @@ def test_fix_level_runtime_findings():
     ]
     for fuzz in cases:
         assert decide(_doctor(), fuzz, _reality()).verdict == FIX_FIRST, fuzz
-    for flag in ({"empty_content": True}, {"schema_violation": True}, {"echo_mismatch_inputs": ["q"]}):
+    for flag in ({"empty_content": True}, {"schema_violation": True}):
         assert decide(_doctor(), _fuzz(), _reality(_tool("a", **flag))).verdict == FIX_FIRST, flag
 
 
@@ -131,4 +133,52 @@ def test_combine_writes_decision_to_report_and_outputs(tmp_path):
     assert outputs["blocker-count"] == "1"
     assert outputs["combined-grade"] == "A"  # the average alone would have said ship
     report = (tmp_path / "combined-report.md").read_text()
-    assert report.startswith("## mcp-trust-check — BLOCK")
+    assert report.startswith("## mcp-trust-check — BLOCK (HIGH confidence)")
+    assert outputs["confidence"] == HIGH
+    assert outputs["needs-human-review"] == "true"
+
+
+def test_full_coverage_ship_is_high_confidence_and_needs_no_review():
+    d = decide(_doctor(), _fuzz(), _reality(_tool("a")))
+    assert (d.verdict, d.confidence, d.needs_human_review, d.coverage_percent) == (SHIP, HIGH, False, 100.0)
+
+
+def test_coverage_thresholds():
+    # The real case that motivated this: chrome-devtools-mcp, 8 of 30 tools called, still a SHIP.
+    assert decide(_doctor(), _fuzz(tested_count=8, skipped_count=22), _reality()).confidence == LOW
+    assert decide(_doctor(), _fuzz(tested_count=5, skipped_count=5), _reality()).confidence == MEDIUM
+    assert decide(_doctor(), _fuzz(tested_count=8, skipped_count=2), _reality()).confidence == HIGH
+
+
+def test_low_confidence_ship_still_needs_review():
+    d = decide(_doctor(), _fuzz(tested_count=3, skipped_count=6), _reality())
+    assert d.verdict == SHIP and d.confidence == LOW and d.needs_human_review
+    assert any("3 of 9 tools" in r for r in d.confidence_reasons)
+    assert any("include-destructive" in r for r in d.confidence_reasons)
+
+
+def test_static_only_is_low_confidence():
+    d = decide(_doctor(), None, None)
+    assert d.confidence == LOW and d.needs_human_review and d.coverage_percent is None
+
+
+def test_no_checkable_response_caps_at_medium():
+    assert decide(_doctor(), _fuzz(), _reality(checkable_count=0)).confidence == MEDIUM
+
+
+def test_block_is_high_confidence_regardless_of_coverage():
+    d = decide(_doctor(), _fuzz(crash_count=1, tested_count=1, skipped_count=29), _reality())
+    assert d.verdict == BLOCK and d.confidence == HIGH and d.needs_human_review
+
+
+def test_fix_first_always_needs_review():
+    d = decide(_doctor(), _fuzz(timeout_count=1), _reality())
+    assert d.verdict == FIX_FIRST and d.confidence == HIGH and d.needs_human_review
+
+
+def test_echo_mismatch_is_a_note_not_a_rule():
+    # Matches mcp-reality-check, which reports echo mismatch separately and never scores it.
+    # Real case: server-everything's get-structured-content and chrome-devtools-mcp both hit it.
+    d = decide(_doctor(), _fuzz(), _reality(_tool("a", echo_mismatch_inputs=["New York"])))
+    assert d.verdict == SHIP and d.fixes == []
+    assert any("not scored" in n for n in d.notes)

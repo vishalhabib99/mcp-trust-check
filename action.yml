@@ -46,7 +46,8 @@ inputs:
   fail-on:
     description: >
       Fail the workflow on the release decision instead of (or as well as) the score:
-      "block" fails only on BLOCK, "fix" fails on FIX-FIRST or BLOCK, "never" disables it.
+      "block" fails only on BLOCK, "fix" fails on FIX-FIRST or BLOCK, "review" fails unless
+      the decision is SHIP with HIGH confidence, "never" disables it.
     required: false
     default: "never"
   comment:
@@ -88,6 +89,15 @@ outputs:
   fix-count:
     description: "Number of rules that fired at FIX-FIRST level."
     value: ${{ steps.combine.outputs.fix-count }}
+  confidence:
+    description: "HIGH, MEDIUM, or LOW: how much of the server was actually exercised behind the decision. A level with reasons, not a probability."
+    value: ${{ steps.combine.outputs.confidence }}
+  needs-human-review:
+    description: "true unless the decision is SHIP with HIGH confidence."
+    value: ${{ steps.combine.outputs.needs-human-review }}
+  coverage-percent:
+    description: "Share of the server's tools mcp-fuzz actually called (empty if the runtime checks didn't run)."
+    value: ${{ steps.combine.outputs.coverage-percent }}
 
 runs:
   using: "composite"
@@ -193,6 +203,7 @@ runs:
           never) ;;
           block) [ "$decision" = "BLOCK" ] && { echo "::error::mcp-trust-check decision is BLOCK"; exit 1; } ;;
           fix) [ "$decision" != "SHIP" ] && { echo "::error::mcp-trust-check decision is $decision"; exit 1; } ;;
-          *) echo "::error::fail-on must be never, block, or fix (got '$fail_on')"; exit 1 ;;
+          review) [ "${{ steps.combine.outputs.needs-human-review }}" = "true" ] && { echo "::error::mcp-trust-check needs human review ($decision, ${{ steps.combine.outputs.confidence }} confidence)"; exit 1; } ;;
+          *) echo "::error::fail-on must be never, block, fix, or review (got '$fail_on')"; exit 1 ;;
         esac
         exit 0
