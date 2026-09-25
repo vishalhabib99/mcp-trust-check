@@ -1,4 +1,4 @@
-from mcp_trust_check.session import GuardedCallResult, GuardedSession
+from mcp_trust_check.session import ACT, BLOCK, ESCALATE, GuardedCallResult, GuardedSession, decide_call
 
-__all__ = ["GuardedCallResult", "GuardedSession"]
-__version__ = "0.1.0"
+__all__ = ["ACT", "BLOCK", "ESCALATE", "GuardedCallResult", "GuardedSession", "decide_call"]
+__version__ = "0.2.0"

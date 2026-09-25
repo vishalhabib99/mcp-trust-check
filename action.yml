@@ -36,7 +36,7 @@ inputs:
     required: false
     default: ""
   include-destructive:
-    description: "Also let mcp-fuzz test tools without readOnlyHint:true. Only enable against a server you're confident is safe to call blindly (a sandbox/test backend) — see mcp-fuzz's README Safety section."
+    description: "Also let mcp-fuzz and mcp-reality-check test tools without readOnlyHint:true. Only enable against a server you're confident is safe to call blindly (a sandbox/test backend) — see mcp-fuzz's README Safety section."
     required: false
     default: "false"
   fail-under:
@@ -156,8 +156,8 @@ runs:
         set +e
         mcp-fuzz "${DESTRUCTIVE_FLAG[@]}" "${CONN_ARGS[@]}" --json "${TARGET[@]}" > fuzz-report.json
         mcp-fuzz "${DESTRUCTIVE_FLAG[@]}" "${CONN_ARGS[@]}" "${TARGET[@]}" > fuzz-report.txt
-        mcp-reality-check "${CONN_ARGS[@]}" --json "${TARGET[@]}" > reality-report.json
-        mcp-reality-check "${CONN_ARGS[@]}" "${TARGET[@]}" > reality-report.txt
+        mcp-reality-check "${DESTRUCTIVE_FLAG[@]}" "${CONN_ARGS[@]}" --json "${TARGET[@]}" > reality-report.json
+        mcp-reality-check "${DESTRUCTIVE_FLAG[@]}" "${CONN_ARGS[@]}" "${TARGET[@]}" > reality-report.txt
         set -e
 
     - name: Combine reports

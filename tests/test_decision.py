@@ -182,3 +182,14 @@ def test_echo_mismatch_is_a_note_not_a_rule():
     d = decide(_doctor(), _fuzz(), _reality(_tool("a", echo_mismatch_inputs=["New York"])))
     assert d.verdict == SHIP and d.fixes == []
     assert any("not scored" in n for n in d.notes)
+
+
+def test_slow_and_large_responses_are_notes_not_rules():
+    fuzz = _fuzz(
+        latency={"slow_tools": [{"name": "get_console_message", "duration_ms": 436.2, "reasons": []}]},
+        response_size={"bloated_tools": [{"name": "list_processes", "response_chars": 104000, "reasons": []}]},
+    )
+    d = decide(_doctor(), fuzz, _reality())
+    assert d.verdict == SHIP and d.fixes == []
+    assert any("get_console_message (436ms)" in n for n in d.notes)
+    assert any("list_processes (104,000 chars)" in n for n in d.notes)

@@ -97,6 +97,16 @@ def decide(doctor: dict | None, fuzz: dict | None, reality: dict | None) -> Deci
         if orphans:
             fixes.append(f"mcp-fuzz: {_count(orphans, 'child resource')} left orphaned after parent delete")
 
+        # Single-sample measurements: worth a look, never a rule (same caveat mcp-fuzz documents).
+        slow = (fuzz.get("latency") or {}).get("slow_tools") or []
+        if slow:
+            notes.append("Worth a manual look, one call each: slow " + ", ".join(
+                f"{t['name']} ({t['duration_ms']:.0f}ms)" for t in slow) + ".")
+        bloated = (fuzz.get("response_size") or {}).get("bloated_tools") or []
+        if bloated:
+            notes.append("Worth a manual look, one call each: large responses from " + ", ".join(
+                f"{t['name']} ({t['response_chars']:,} chars)" for t in bloated) + ".")
+
     if reality is not None:
         if reality.get("connect_error"):
             blockers.append(f"mcp-reality-check: server never connected ({reality['connect_error']})")

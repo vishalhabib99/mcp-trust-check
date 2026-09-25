@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from mcp import ClientSession, types
 
 from mcp_doctor.gate import RegistrationResult, check_tool_registration
-from mcp_fuzz.gate import LatencyGate
+from mcp_fuzz.gate import MIN_CALLS_FOR_LATENCY_OUTLIER, LatencyGate
 from mcp_reality_check.checks import (
     check_echo_mismatch,
     check_empty_content,
@@ -40,6 +40,16 @@ from mcp_reality_check.checks import (
 from mcp_reality_check.generator import string_argument_values
 
 DEFAULT_TIMEOUT_SECONDS = 15.0
+
+# Per-call decision, the live counterpart of decision.py's SHIP / FIX-FIRST / BLOCK. What the agent
+# should do with this one response: use it, hand it to a person, or stop.
+ACT = "ACT"
+ESCALATE = "ESCALATE"
+BLOCK = "BLOCK"
+
+HIGH = "HIGH"
+MEDIUM = "MEDIUM"
+LOW = "LOW"
 
 
 def _field(model, snake_name: str, camel_name: str):
@@ -77,6 +87,68 @@ class GuardedCallResult:
             or self.slow_reasons or self.bloated_reasons
         )
 
+    # Filled in by GuardedSession.call_tool: ACT / ESCALATE / BLOCK, how sure, and why.
+    decision: str = ACT
+    confidence: str = HIGH
+    reasons: list[str] = field(default_factory=list)
+
+    @property
+    def should_act(self) -> bool:
+        """True for an ACT unless confidence is LOW. Looser than the release decision's
+        needs-human-review on purpose: live, MEDIUM mostly means "no speed baseline yet" for a
+        tool's first few calls, and escalating every early call would make the gate useless.
+        The correctness checks all ran either way. LOW (a tool that never went through
+        list_tools, so nothing was checked against its schema) still escalates."""
+        return self.decision == ACT and self.confidence != LOW
+
+
+def decide_call(
+    result: GuardedCallResult,
+    prior_calls: int,
+    known_tool: bool,
+    registration_flagged: bool,
+) -> tuple[str, str, list[str]]:
+    """Pure function: one call's findings in, (decision, confidence, reasons) out. The same
+    split TypeSafe's Jev makes between an answer and whether to act on it, from rules, not a
+    model. Confidence is how much this call could actually be checked, never a probability."""
+    blockers: list[str] = []
+    if result.outcome == "crash":
+        blockers.append(f"crashed ({result.detail})")
+    elif result.outcome == "timeout":
+        blockers.append(f"timed out ({result.detail})")
+    if result.refusal_in_disguise:
+        # The agent would read a failure as success and build on it.
+        blockers.append(f"disguised refusal: {result.refusal_in_disguise}")
+    if blockers:
+        return BLOCK, HIGH, blockers
+
+    reasons: list[str] = []
+    if result.empty_content:
+        reasons.append("empty content on a successful call")
+    if result.schema_violation:
+        reasons.append(f"output breaks its own schema: {result.schema_violation}")
+    reasons.extend(f"slow: {r}" for r in result.slow_reasons)
+    reasons.extend(f"large response: {r}" for r in result.bloated_reasons)
+    decision = ESCALATE if reasons else ACT
+    if result.is_error:
+        reasons.append("the tool returned an honest error (isError), safe for the agent to handle")
+
+    confidence = HIGH
+    if not known_tool:
+        confidence = LOW
+        reasons.append("tool wasn't in tools/list (call list_tools first), so its output schema and registration weren't checked")
+    else:
+        if prior_calls < MIN_CALLS_FOR_LATENCY_OUTLIER:
+            confidence = MEDIUM
+            reasons.append(
+                f"{prior_calls} earlier call(s) to this tool, so there's no speed/size baseline yet "
+                f"(needs {MIN_CALLS_FOR_LATENCY_OUTLIER})"
+            )
+        if registration_flagged:
+            confidence = MEDIUM
+            reasons.append("mcp-doctor flagged this tool at registration (vague description or annotation conflict)")
+    return decision, confidence, reasons
+
 
 class GuardedSession:
     """One `ClientSession` per instance — `LatencyGate`'s per-tool history
@@ -88,6 +160,7 @@ class GuardedSession:
         self._latency_gate = LatencyGate()
         self._tools_by_name: dict[str, types.Tool] = {}
         self.registration_results: dict[str, RegistrationResult] = {}
+        self._call_counts: dict[str, int] = {}
 
     async def list_tools(self):
         """Calls the real `tools/list` and runs mcp-doctor's registration
@@ -119,9 +192,9 @@ class GuardedSession:
                 self._session.call_tool(tool_name, arguments), timeout=timeout
             )
         except asyncio.TimeoutError:
-            return GuardedCallResult(tool_name, "timeout", detail=f"no response within {timeout}s")
+            return self._decide(GuardedCallResult(tool_name, "timeout", detail=f"no response within {timeout}s"))
         except Exception as exc:
-            return GuardedCallResult(tool_name, "crash", detail=f"{type(exc).__name__}: {exc}")
+            return self._decide(GuardedCallResult(tool_name, "crash", detail=f"{type(exc).__name__}: {exc}"))
         duration_ms = (time.monotonic() - started) * 1000
 
         is_error = bool(_field(result, "is_error", "isError")) if isinstance(result, types.CallToolResult) else False
@@ -132,6 +205,8 @@ class GuardedSession:
             duration_ms=duration_ms, response_chars=len(response_text),
         )
 
+        prior_calls = self._call_counts.get(tool_name, 0)
+        self._call_counts[tool_name] = prior_calls + 1
         latency_result = self._latency_gate.record(tool_name, duration_ms, len(response_text))
         guarded.slow_reasons = latency_result.slow_reasons
         guarded.bloated_reasons = latency_result.bloated_reasons
@@ -147,4 +222,15 @@ class GuardedSession:
                 structured = _field(result, "structured_content", "structuredContent")
                 guarded.schema_violation = check_output_schema(structured, output_schema)
 
+        return self._decide(guarded, prior_calls)
+
+    def _decide(self, guarded: GuardedCallResult, prior_calls: int | None = None) -> GuardedCallResult:
+        name = guarded.tool_name
+        registration = self.registration_results.get(name)
+        guarded.decision, guarded.confidence, guarded.reasons = decide_call(
+            guarded,
+            prior_calls=self._call_counts.get(name, 0) if prior_calls is None else prior_calls,
+            known_tool=name in self._tools_by_name,
+            registration_flagged=bool(registration and registration.flagged),
+        )
         return guarded

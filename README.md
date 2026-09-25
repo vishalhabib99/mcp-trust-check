@@ -63,7 +63,7 @@ Set `run` or `url`, not both — the Action fails fast if it gets both. If both 
 | `url` | `""` | URL of an already-running server to test over Streamable HTTP instead of launching one with `run`. Set one or the other. |
 | `headers` | `""` | HTTP headers for `url`, one `KEY=VALUE` per line (values may contain spaces — e.g. `Authorization=Bearer ...`). Pass tokens from secrets. |
 | `env` | `""` | Space-separated `KEY=VALUE` pairs passed through to the launched server (many real servers need an API key to start at all). |
-| `include-destructive` | `false` | Also let mcp-fuzz test tools without `readOnlyHint: true`. Only turn this on against a server you're confident is safe to call blindly — see mcp-fuzz's README Safety section before using it. |
+| `include-destructive` | `false` | Also let mcp-fuzz and mcp-reality-check test tools without `readOnlyHint: true`. Only turn this on against a server you're confident is safe to call blindly — see mcp-fuzz's README Safety section before using it. |
 | `fail-under` | `0` | Fail the workflow if the combined score is below this percent. `0` disables gating. |
 | `fail-on` | `never` | Fail the workflow on the release decision: `block` fails on BLOCK, `fix` fails on FIX-FIRST or BLOCK, `review` fails unless it's SHIP with HIGH confidence, `never` disables it. |
 | `comment` | `true` | Post the combined report as a PR comment. |
@@ -145,6 +145,35 @@ elif result.flagged:
     ...  # slow/bloated relative to this tool's own history, a disguised
          # refusal, empty content, or a schema violation
 ```
+
+### A decision on every call: ACT, ESCALATE, or BLOCK
+
+The release decision above runs once, in CI. Live, the question is narrower: *what should the agent do with this one response?* Every `call_tool` result carries its own decision, the per-call version of SHIP / FIX-FIRST / BLOCK:
+
+```python
+result = await gs.call_tool("some_tool", {"arg": "value"})
+if result.decision == "BLOCK":        # crash, timeout, or a disguised refusal
+    ...                               # don't build on this response
+elif not result.should_act:           # ESCALATE, or an unchecked tool
+    ...                               # hand it to a person
+print(result.decision, result.confidence, result.reasons)
+```
+
+| Decision | When |
+|---|---|
+| **BLOCK** | the call crashed or timed out, or the response is a disguised refusal (an agent would read the failure as success and build on it) |
+| **ESCALATE** | empty content, output that breaks its own schema, or a slow or large response for this tool |
+| **ACT** | none of the above. An honest `isError` is an ACT: the tool told the truth, and the agent can handle it. |
+
+Confidence is how much of this call could actually be checked:
+
+- **HIGH**: the tool is registered, and there are at least 3 earlier calls to compare speed and size against.
+- **MEDIUM**: the tool has fewer than 3 earlier calls (no speed/size baseline yet), or mcp-doctor flagged it at registration.
+- **LOW**: the tool never went through `list_tools`, so there was no schema to check its output against.
+
+`should_act` is `True` for an ACT unless confidence is LOW. That's looser than the release decision on purpose. Live, MEDIUM mostly means "one of the first few calls to this tool," and escalating every early call would make the gate useless; the correctness checks run on every call either way. The rules are one pure function, `decide_call`, with no model and no network.
+
+Dogfooded on the official `@modelcontextprotocol/server-memory` server: a `read_graph` before `list_tools` came back ACT/LOW. After registration, `create_entities` came back ACT/MEDIUM (first call). `read_graph` stayed MEDIUM until its third earlier call, then moved to HIGH.
 
 **One real call per `call_tool`, not three** — the reason this exists as its own composed wrapper rather than "just call all three gates yourself": `mcp_fuzz.gate.LatencyGate.timed_call` and `mcp_reality_check.gate.guarded_call` each make their own real call to the tool. Calling both back to back would mean two real invocations per logical call — wasteful for an idempotent tool, actively wrong for a non-idempotent or destructive one. `GuardedSession` calls the tool exactly once and fans the single real response out to each sibling package's own pure, already-tested per-response functions instead — verified directly: a real test wraps the underlying session's `call_tool` with a call counter and asserts it fires exactly once per `GuardedSession.call_tool`.
 
