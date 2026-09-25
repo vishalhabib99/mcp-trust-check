@@ -32,8 +32,11 @@ def test_list_tools_runs_registration_checks_on_every_tool():
             await gs.list_tools()
             assert "well_behaved" in gs.registration_results
             assert "kills_process" in gs.registration_results
-            # every fixture tool has a real docstring-derived description
-            assert all(not r.flagged for r in gs.registration_results.values())
+            # every fixture tool has a real docstring-derived description, except the pair
+            # planted with a copy-pasted description for the look-alike check
+            planted = {"lookup_order", "cancel_order"}
+            assert all(not r.flagged for n, r in gs.registration_results.items() if n not in planted)
+            assert all(gs.registration_results[n].flagged for n in planted)
 
     asyncio.run(run())
 

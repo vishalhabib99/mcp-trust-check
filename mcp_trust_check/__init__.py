@@ -7,4 +7,4 @@ __all__ = [
     "ACT", "BLOCK", "ESCALATE", "AuditLog", "GuardedCallResult", "GuardedSession", "Policy",
     "PolicyError", "decide_call", "find_pii", "summarize_audit_log", "verify_audit_log",
 ]
-__version__ = "0.3.0"
+__version__ = "0.4.0"

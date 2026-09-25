@@ -92,3 +92,43 @@ def test_calling_before_list_tools_is_low_confidence():
             return await gs.call_tool("well_behaved", {"city": "Paris"})
     r = asyncio.run(run())
     assert (r.decision, r.confidence) == (ACT, LOW) and not r.should_act
+
+
+def test_act_threshold_is_configurable_and_validated():
+    import pytest
+    from mcp_trust_check import GuardedSession
+    r = _ok()
+    r.decision = ACT
+    for confidence, threshold, expected in [
+        (MEDIUM, MEDIUM, True), (MEDIUM, HIGH, False), (HIGH, HIGH, True),
+        (LOW, MEDIUM, False), (LOW, LOW, True),
+    ]:
+        r.confidence, r.act_threshold = confidence, threshold
+        assert r.should_act is expected, (confidence, threshold)
+    with pytest.raises(ValueError):
+        GuardedSession(session=None, act_threshold="medium-ish")
+
+
+def test_strict_threshold_escalates_early_calls_live():
+    async def run():
+        gs, stack = await _guarded_session()
+        gs.act_threshold = HIGH
+        async with stack:
+            await gs.list_tools()
+            return [await gs.call_tool("well_behaved", {"city": "Paris"}) for _ in range(4)]
+    results = asyncio.run(run())
+    assert [r.should_act for r in results] == [False, False, False, True]
+
+
+def test_look_alike_tools_are_flagged_and_capped_at_medium():
+    async def run():
+        gs, stack = await _guarded_session()
+        async with stack:
+            await gs.list_tools()
+            results = [await gs.call_tool("lookup_order", {"order_id": "7"}) for _ in range(4)]
+            clean = [await gs.call_tool("well_behaved", {"city": "Paris"}) for _ in range(4)]
+            return gs, results, clean
+    gs, results, clean = asyncio.run(run())
+    assert gs.registration_results["lookup_order"].flagged and gs.registration_results["cancel_order"].flagged
+    assert results[-1].confidence == MEDIUM and any("look-alike" in r for r in results[-1].reasons)
+    assert clean[-1].confidence == HIGH

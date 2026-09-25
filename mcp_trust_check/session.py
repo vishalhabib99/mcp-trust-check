@@ -30,7 +30,7 @@ from pathlib import Path
 
 from mcp import ClientSession, types
 
-from mcp_doctor.gate import RegistrationResult, check_tool_registration
+from mcp_doctor.gate import RegistrationResult, check_tool_registration, check_tools_distinguishable
 from mcp_fuzz.gate import MIN_CALLS_FOR_LATENCY_OUTLIER, LatencyGate
 from mcp_reality_check.checks import (
     check_echo_mismatch,
@@ -56,6 +56,7 @@ BLOCK = "BLOCK"
 HIGH = "HIGH"
 MEDIUM = "MEDIUM"
 LOW = "LOW"
+_RANK = {LOW: 0, MEDIUM: 1, HIGH: 2}
 
 
 def _field(model, snake_name: str, camel_name: str):
@@ -89,6 +90,8 @@ class GuardedCallResult:
     pii_findings: list[str] = field(default_factory=list)
     # False when the policy stopped the call before it reached the server
     called: bool = True
+    # Lowest confidence at which an ACT may go ahead without a person (GuardedSession(act_threshold=...))
+    act_threshold: str = MEDIUM
 
     @property
     def flagged(self) -> bool:
@@ -104,12 +107,14 @@ class GuardedCallResult:
 
     @property
     def should_act(self) -> bool:
-        """True for an ACT unless confidence is LOW. Looser than the release decision's
-        needs-human-review on purpose: live, MEDIUM mostly means "no speed baseline yet" for a
-        tool's first few calls, and escalating every early call would make the gate useless.
-        The correctness checks all ran either way. LOW (a tool that never went through
-        list_tools, so nothing was checked against its schema) still escalates."""
-        return self.decision == ACT and self.confidence != LOW
+        """True for an ACT whose confidence is at least act_threshold. Like Jev, the check
+        reports how sure it is and the operator decides how sure is sure enough.
+
+        The default, MEDIUM, is looser than the release decision's needs-human-review on
+        purpose: live, MEDIUM mostly means "no speed baseline yet" for a tool's first few
+        calls, and escalating every early call would make the gate useless. The correctness
+        checks run either way. A strict deployment can pass act_threshold=HIGH."""
+        return self.decision == ACT and _RANK[self.confidence] >= _RANK[self.act_threshold]
 
 
 def decide_call(
@@ -159,7 +164,7 @@ def decide_call(
             )
         if registration_flagged:
             confidence = MEDIUM
-            reasons.append("mcp-doctor flagged this tool at registration (vague description or annotation conflict)")
+            reasons.append("mcp-doctor flagged this tool at registration (vague or look-alike description, or an annotation conflict)")
     return decision, confidence, reasons
 
 
@@ -173,11 +178,16 @@ class GuardedSession:
         session: ClientSession,
         policy: Policy | None = None,
         audit_log: AuditLog | str | None = None,
+        act_threshold: str = MEDIUM,
     ):
         """`policy` is enforced before every call (see mcp_trust_check.policy); without one, all
         calls go through and responses are scanned with the default PII detectors. `audit_log`
         is an AuditLog or a path; every call, including ones the policy stopped, gets a
-        hash-chained record."""
+        hash-chained record. `act_threshold` (HIGH / MEDIUM / LOW, default MEDIUM) is the lowest
+        confidence at which `should_act` lets an ACT through."""
+        if act_threshold not in _RANK:
+            raise ValueError(f"act_threshold must be one of {list(_RANK)}, got {act_threshold!r}")
+        self.act_threshold = act_threshold
         self._session = session
         self.policy = policy
         self._pii_detectors = policy.pii if policy is not None else DEFAULT_DETECTORS
@@ -199,6 +209,10 @@ class GuardedSession:
             t.name: check_tool_registration(t.name, t.description, t.annotations)
             for t in result.tools
         }
+        # Cross-tool: descriptions an agent can't tell apart. Flags both tools, so every call to
+        # either one drops to MEDIUM confidence.
+        for name, issues in check_tools_distinguishable(result.tools).items():
+            self.registration_results[name].issues.extend(issues)
         return result
 
     async def call_tool(
@@ -219,7 +233,7 @@ class GuardedSession:
                 tool_name, arguments, read_only=self._is_read_only(tool_name), approved=approved
             )
             if verdict is not None:
-                stopped = GuardedCallResult(tool_name, "not_called", called=False)
+                stopped = GuardedCallResult(tool_name, "not_called", called=False, act_threshold=self.act_threshold)
                 stopped.decision, stopped.confidence, stopped.reasons = verdict, HIGH, policy_reasons
                 self._audit(stopped, arguments)
                 return stopped
@@ -281,6 +295,7 @@ class GuardedSession:
 
     def _decide(self, guarded: GuardedCallResult, arguments: dict, prior_calls: int | None = None) -> GuardedCallResult:
         name = guarded.tool_name
+        guarded.act_threshold = self.act_threshold
         registration = self.registration_results.get(name)
         guarded.decision, guarded.confidence, guarded.reasons = decide_call(
             guarded,

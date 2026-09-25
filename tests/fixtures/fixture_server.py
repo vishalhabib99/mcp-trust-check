@@ -60,5 +60,17 @@ def deletes_record(record_id: str) -> str:
     return f"Deleted {record_id}."
 
 
+@server.tool(annotations=READ_ONLY)
+def lookup_order(order_id: str) -> str:
+    """Look up an order by its id."""
+    return f"Order {order_id}: shipped."
+
+
+@server.tool(annotations=READ_ONLY)
+def cancel_order(order_id: str) -> str:
+    """Look up an order by its id."""  # copy-pasted description: an agent can't tell these apart
+    return f"Order {order_id}: cancelled."
+
+
 if __name__ == "__main__":
     server.run(transport="stdio")

@@ -168,10 +168,10 @@ print(result.decision, result.confidence, result.reasons)
 Confidence is how much of this call could actually be checked:
 
 - **HIGH**: the tool is registered, and there are at least 3 earlier calls to compare speed and size against.
-- **MEDIUM**: the tool has fewer than 3 earlier calls (no speed/size baseline yet), or mcp-doctor flagged it at registration.
+- **MEDIUM**: the tool has fewer than 3 earlier calls (no speed/size baseline yet), or mcp-doctor flagged it at registration. That includes a [look-alike description](https://github.com/vishalhabib99/mcp-doctor/releases/tag/v1.12.0): two differently named tools described identically give an agent nothing to choose between.
 - **LOW**: the tool never went through `list_tools`, so there was no schema to check its output against.
 
-`should_act` is `True` for an ACT unless confidence is LOW. That's looser than the release decision on purpose. Live, MEDIUM mostly means "one of the first few calls to this tool," and escalating every early call would make the gate useless; the correctness checks run on every call either way. The rules are one pure function, `decide_call`, with no model and no network.
+`should_act` is `True` for an ACT whose confidence is at least `act_threshold`. The default is `MEDIUM`, and like Jev, the check reports how sure it is while you decide how sure is sure enough: `GuardedSession(session, act_threshold="HIGH")` also escalates each tool's first few calls, and `"LOW"` acts on any ACT. An unknown value is an error. The default is looser than the release decision on purpose. Live, MEDIUM mostly means "one of the first few calls to this tool," and escalating every early call would make the gate useless; the correctness checks run on every call either way. The rules are one pure function, `decide_call`, with no model and no network.
 
 Dogfooded on the official `@modelcontextprotocol/server-memory` server: a `read_graph` before `list_tools` came back ACT/LOW. After registration, `create_entities` came back ACT/MEDIUM (first call). `read_graph` stayed MEDIUM until its third earlier call, then moved to HIGH.
 
