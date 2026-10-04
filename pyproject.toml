@@ -16,6 +16,11 @@ dependencies = [
     "mcp-reality-check>=0.4.1",
 ]
 
+[project.urls]
+Homepage = "https://github.com/vishalhabib99/mcp-trust-check"
+Source = "https://github.com/vishalhabib99/mcp-trust-check"
+Issues = "https://github.com/vishalhabib99/mcp-trust-check/issues"
+
 [project.scripts]
 mcp-trust-check-audit = "mcp_trust_check.audit:main"
 
