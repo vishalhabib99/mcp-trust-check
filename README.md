@@ -110,7 +110,7 @@ On five official or widely used servers, run locally with the defaults, all five
 | `server-filesystem` | 10 / 14 | SHIP, MEDIUM |
 | `server-everything` | 9 / 13 | SHIP, MEDIUM |
 | `server-memory` | 3 / 9 | SHIP, **LOW** |
-| `chrome-devtools-mcp` (52.8K★) | 8 / 30 | SHIP, **LOW** |
+| `chrome-devtools-mcp` (53.0K★) | 8 / 30 | SHIP, **LOW** |
 
 ## What the combined score means — and doesn't
 
